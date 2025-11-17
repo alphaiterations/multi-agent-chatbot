@@ -1,10 +1,11 @@
 """
-Chainlit Frontend for Text2SQL Chatbot with Graph Visualization
+Chainlit Frontend for Text2SQL Chatbot with Graph Visualization and LangGraph Debugging
 """
 
 import chainlit as cl
-from text2sql_agent import process_question, generat_graph
+from text2sql_agent import process_question, process_question_stream, generat_graph
 import os
+import json
 
 # Set page configuration
 @cl.on_chat_start
@@ -41,65 +42,180 @@ async def start():
 
 @cl.on_message
 async def main(message: cl.Message):
-    """Handle incoming messages"""
+    """Handle incoming messages with debugging visualization"""
     
     user_question = message.content
     
-    # Send a processing message
-    processing_msg = cl.Message(content="🔍 Processing your question...")
-    await processing_msg.send()
-    
-    try:
-        # Process the question using the Text2SQL agent
-        result = process_question(user_question)
+    # Create main processing step
+    async with cl.Step(name="🤖 Agent Workflow", type="llm") as workflow_step:
         
+        # Dictionary to hold step references
+        node_steps = {}
+        final_result = None
+        
+        try:
+            # Stream through the agent execution
+            async for event in process_question_stream(user_question):
+                event_type = event.get("type")
+                
+                # Handle node start
+                if event_type == "node_start":
+                    node_name = event["node"]
+                    node_display_names = {
+                        "generate_sql": "📝 Generate SQL Query",
+                        "execute_sql": "⚙️ Execute SQL Query",
+                        "generate_answer": "💬 Generate Answer",
+                        "handle_error": "🔧 Handle Error",
+                        "decide_graph_need": "📊 Decide Graph Need",
+                        "generate_graph": "📈 Generate Graph"
+                    }
+                    
+                    display_name = node_display_names.get(node_name, node_name)
+                    
+                    # Create a step for this node
+                    node_step = cl.Step(
+                        name=display_name,
+                        type="tool",
+                        parent_id=workflow_step.id
+                    )
+                    await node_step.send()
+                    node_steps[node_name] = node_step
+                
+                # Handle node end
+                elif event_type == "node_end":
+                    node_name = event["node"]
+                    output = event["output"]
+                    state = event["state"]
+                    
+                    if node_name in node_steps:
+                        node_step = node_steps[node_name]
+                        
+                        # Format output based on node type
+                        output_text = ""
+                        
+                        if node_name == "generate_sql":
+                            sql = output.get("sql_query", "")
+                            output_text = f"**Generated SQL Query:**\n```sql\n{sql}\n```"
+                        
+                        elif node_name == "execute_sql":
+                            if output.get("error"):
+                                output_text = f"❌ **Error:**\n```\n{output['error']}\n```"
+                            else:
+                                result = output.get("query_result", "")
+                                # Truncate long results for display
+                                if len(result) > 500:
+                                    result = result[:500] + "\n... (truncated)"
+                                output_text = f"**Query Results:**\n```json\n{result}\n```"
+                        
+                        elif node_name == "generate_answer":
+                            answer = output.get("final_answer", "")
+                            output_text = f"**Answer:**\n{answer}"
+                        
+                        elif node_name == "handle_error":
+                            corrected = output.get("sql_query", "")
+                            iteration = output.get("iteration", 0)
+                            output_text = f"**Corrected SQL (Attempt {iteration}):**\n```sql\n{corrected}\n```"
+                        
+                        elif node_name == "decide_graph_need":
+                            needs_graph = output.get("needs_graph", False)
+                            graph_type = output.get("graph_type", "")
+                            if needs_graph:
+                                output_text = f"✅ **Graph Needed:** {graph_type.upper()} chart"
+                            else:
+                                output_text = "ℹ️ **No graph needed** for this query"
+                        
+                        elif node_name == "generate_graph":
+                            has_image = bool(output.get("graph_image"))
+                            if has_image:
+                                output_text = "✅ Graph generated successfully"
+                            else:
+                                output_text = "⚠️ Graph generation skipped"
+                        
+                        # Update the step with output
+                        node_step.output = output_text
+                        await node_step.update()
+                
+                # Handle final result
+                elif event_type == "final":
+                    final_result = event["result"]
+                
+                # Handle errors
+                elif event_type == "error":
+                    error_msg = event["error"]
+                    workflow_step.output = f"❌ **Error:** {error_msg}"
+                    await workflow_step.update()
+                    return
+            
+            # Mark workflow as complete
+            workflow_step.output = "✅ Workflow completed successfully"
+            await workflow_step.update()
+        
+        except Exception as e:
+            workflow_step.output = f"❌ **Unexpected Error:** {str(e)}"
+            await workflow_step.update()
+            raise
+    
+    # Now send the final response outside the workflow step
+    if final_result:
         # Build the response content
-        response_content = f"""**Your Question:** {result['question']}
+        response_content = f"""**Your Question:** {final_result['question']}
 
 **Generated SQL Query:**
 ```sql
-{result['sql_query']}
+{final_result['sql_query']}
 ```
 
 **Answer:**
-{result['final_answer']}
+{final_result['final_answer']}
 """
         
         # If there was an error, include it
-        if result.get('error'):
-            response_content += f"\n\n⚠️ **Note:** {result['error']}"
-        
-        # Remove processing message and send final response
-        await processing_msg.remove()
+        if final_result.get('error'):
+            response_content += f"\n\n⚠️ **Note:** {final_result['error']}"
         
         # Send text response
         await cl.Message(content=response_content).send()
         
-        # Send graph if available
-        if result.get('needs_graph') and result.get('graph_image'):
-            import base64
+        # Send graph if available - use Chainlit's native Plotly element
+        if final_result.get('needs_graph'):
+            if final_result.get('graph_json'):
+                # Send interactive Plotly visualization using Chainlit's Plotly element
+                import plotly.graph_objects as go
+                
+                # Parse the JSON back to a figure
+                fig = go.Figure(json.loads(final_result['graph_json']))
+                
+                graph_element = cl.Plotly(
+                    name=f"{final_result.get('graph_type', 'chart')}_visualization",
+                    figure=fig,
+                    display="inline"
+                )
+                
+                await cl.Message(
+                    content=f"📊 **Interactive Visualization ({final_result.get('graph_type', 'chart').title()} Chart)**\n\n*Hover over the chart for details, zoom, and pan!*",
+                    elements=[graph_element]
+                ).send()
             
-            # Decode base64 image
-            image_data = base64.b64decode(result['graph_image'])
-            
-            # Create image element
-            graph_element = cl.Image(
-                name=f"{result.get('graph_type', 'chart')}_visualization",
-                content=image_data,
-                display="inline",
-                size="large"
-            )
-            
-            # Send graph with caption
-            await cl.Message(
-                content=f"📊 **Visualization ({result.get('graph_type', 'chart').title()} Chart)**",
-                elements=[graph_element]
-            ).send()
-        
-    except Exception as e:
-        error_message = f"❌ An error occurred: {str(e)}\n\nPlease make sure:\n1. The database file exists (run `python db_init.py` first)\n2. Your OPENAI_API_KEY is set in the .env file"
-        await processing_msg.remove()
-        await cl.Message(content=error_message).send()
+            elif final_result.get('graph_image'):
+                # Fallback to static image if JSON not available
+                import base64
+                
+                # Decode base64 image
+                image_data = base64.b64decode(final_result['graph_image'])
+                
+                # Create image element
+                graph_element = cl.Image(
+                    name=f"{final_result.get('graph_type', 'chart')}_visualization",
+                    content=image_data,
+                    display="inline",
+                    size="large"
+                )
+                
+                # Send graph with caption
+                await cl.Message(
+                    content=f"📊 **Visualization ({final_result.get('graph_type', 'chart').title()} Chart)**",
+                    elements=[graph_element]
+                ).send()
 
 
 @cl.on_chat_end

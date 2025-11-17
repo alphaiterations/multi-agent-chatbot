@@ -9,9 +9,6 @@ from typing import TypedDict, Annotated, Sequence, Optional
 from langgraph.graph import StateGraph, END
 from openai import OpenAI
 import json
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
 import pandas as pd
 from io import BytesIO
 import base64
@@ -109,6 +106,7 @@ class AgentState(TypedDict):
     needs_graph: bool
     graph_type: str
     graph_image: str
+    graph_json: str  # Plotly figure JSON for Chainlit
 
 
 def generate_sql(state: AgentState) -> AgentState:
@@ -277,7 +275,7 @@ Respond in JSON format:
 
 
 def generate_graph(state: AgentState) -> AgentState:
-    """Generate a graph visualization from query results"""
+    """Generate a graph visualization from query results using LLM-generated Plotly code"""
     query_result = state["query_result"]
     graph_type = state["graph_type"]
     question = state["question"]
@@ -287,70 +285,100 @@ def generate_graph(state: AgentState) -> AgentState:
         results = json.loads(query_result)
         if not results or len(results) == 0:
             state["graph_image"] = ""
+            state["graph_json"] = ""
             return state
         
-        # Convert to DataFrame
+        # Convert to DataFrame for context
         df = pd.DataFrame(results)
-        
-        # Create figure
-        plt.figure(figsize=(10, 6))
-        plt.style.use('seaborn-v0_8-darkgrid')
-        
-        # Determine x and y columns
         columns = df.columns.tolist()
+        sample_data = df.head(5).to_dict('records')
         
-        if len(columns) >= 2:
-            # Use first column for x-axis, second for y-axis
-            x_col = columns[0]
-            y_col = columns[1]
-            
-            # Limit to top 20 items for readability
-            if len(df) > 20:
-                df = df.head(20)
-            
-            if graph_type == "bar":
-                plt.bar(range(len(df)), df[y_col], color='steelblue', alpha=0.8)
-                plt.xticks(range(len(df)), df[x_col], rotation=45, ha='right')
-                plt.ylabel(y_col.replace('_', ' ').title())
-                plt.xlabel(x_col.replace('_', ' ').title())
-                
-            elif graph_type == "line":
-                plt.plot(df[x_col], df[y_col], marker='o', linewidth=2, markersize=6, color='steelblue')
-                plt.xlabel(x_col.replace('_', ' ').title())
-                plt.ylabel(y_col.replace('_', ' ').title())
-                plt.xticks(rotation=45, ha='right')
-                plt.grid(True, alpha=0.3)
-                
-            elif graph_type == "pie":
-                # Use top 10 for pie charts
-                if len(df) > 10:
-                    df = df.head(10)
-                plt.pie(df[y_col], labels=df[x_col], autopct='%1.1f%%', startangle=90)
-                plt.axis('equal')
-                
-            elif graph_type == "scatter":
-                plt.scatter(df[x_col], df[y_col], alpha=0.6, s=100, color='steelblue')
-                plt.xlabel(x_col.replace('_', ' ').title())
-                plt.ylabel(y_col.replace('_', ' ').title())
-                plt.grid(True, alpha=0.3)
+        # Generate Plotly code using LLM
+        prompt = f"""Generate Python code using Plotly to visualize the following data.
+
+Question: {question}
+Graph Type: {graph_type}
+Columns: {columns}
+Sample Data (first 5 rows): {json.dumps(sample_data, indent=2)}
+Total Rows: {len(df)}
+
+Requirements:
+1. Use plotly.graph_objects or plotly.express
+2. The data is already loaded as 'df' (a pandas DataFrame)
+3. Create an appropriate {graph_type} chart
+4. Limit data to top 20 rows if there are many rows
+5. Add proper titles, labels, and formatting
+6. The figure variable must be named 'fig'
+7. Return ONLY the Python code, no explanations or markdown
+8. Do NOT include any import statements
+9. Do NOT include code to show the figure (no fig.show())
+10. Make the visualization visually appealing with appropriate colors and layout
+11. Update the layout for better interactivity (hover info, responsive sizing)
+
+Generate the Plotly code:"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a data visualization expert. Generate clean, executable Plotly code without any markdown formatting or explanations."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3
+        )
         
-        plt.title(question, fontsize=12, fontweight='bold', pad=20)
-        plt.tight_layout()
+        plotly_code = response.choices[0].message.content.strip()
+        # Remove markdown code blocks if present
+        plotly_code = plotly_code.replace("```python", "").replace("```", "").strip()
         
-        # Save to bytes buffer
-        buffer = BytesIO()
-        plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
-        buffer.seek(0)
+        # Prepare execution environment
+        exec_globals = {
+            'df': df,
+            'pd': pd,
+            'json': json
+        }
         
-        # Encode to base64
-        image_base64 = base64.b64encode(buffer.read()).decode('utf-8')
-        state["graph_image"] = image_base64
+        # Import plotly dynamically
+        try:
+            import plotly.graph_objects as go
+            import plotly.express as px
+            exec_globals['go'] = go
+            exec_globals['px'] = px
+        except ImportError:
+            print("Plotly not installed. Installing...")
+            import subprocess
+            subprocess.check_call(['pip', 'install', 'plotly', 'kaleido'])
+            import plotly.graph_objects as go
+            import plotly.express as px
+            exec_globals['go'] = go
+            exec_globals['px'] = px
         
-        plt.close()
+        # Execute the generated code
+        exec(plotly_code, exec_globals)
+        
+        # Get the figure object
+        fig = exec_globals.get('fig')
+        
+        if fig is None:
+            raise ValueError("Generated code did not create a 'fig' variable")
+        
+        # Export figure as JSON for Chainlit's Plotly element
+        graph_json = fig.to_json()
+        state["graph_json"] = graph_json
+        
+        # Also generate static image as fallback
+        try:
+            image_bytes = fig.to_image(format="png", width=1000, height=600)
+            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+            state["graph_image"] = image_base64
+        except Exception as img_error:
+            print(f"Image generation warning (non-critical): {img_error}")
+            state["graph_image"] = ""
         
     except Exception as e:
         print(f"Graph generation error: {e}")
+        print(f"Generated code:\n{plotly_code if 'plotly_code' in locals() else 'No code generated'}")
         state["graph_image"] = ""
+        state["graph_json"] = ""
     
     return state
 
@@ -510,7 +538,8 @@ def process_question(question: str) -> dict:
         iteration=0,
         needs_graph=False,
         graph_type="",
-        graph_image=""
+        graph_image="",
+        graph_json=""
     )
     
     # Invoke with increased recursion limit
@@ -527,8 +556,80 @@ def process_question(question: str) -> dict:
         "error": result.get("error", ""),
         "needs_graph": result.get("needs_graph", False),
         "graph_type": result.get("graph_type", ""),
-        "graph_image": result.get("graph_image", "")
+        "graph_image": result.get("graph_image", ""),
+        "graph_json": result.get("graph_json", "")
     }
+
+
+async def process_question_stream(question: str):
+    """
+    Process a natural language question and stream node execution events.
+    This is an async generator that yields node events for debugging visualization.
+    
+    Yields:
+        dict: Event with type ('node_start', 'node_end', 'error', 'final') and data
+    """
+    initial_state = AgentState(
+        question=question,
+        sql_query="",
+        query_result="",
+        final_answer="",
+        error="",
+        iteration=0,
+        needs_graph=False,
+        graph_type="",
+        graph_image="",
+        graph_json=""
+    )
+    
+    current_state = initial_state.copy()
+    
+    try:
+        # Stream events from the graph
+        async for event in text2sql_graph.astream_events(
+            initial_state,
+            config={"recursion_limit": 50},
+            version="v1"
+        ):
+            event_type = event.get("event")
+            
+            # Node start event
+            if event_type == "on_chain_start":
+                node_name = event.get("name", "")
+                if node_name in ["generate_sql", "execute_sql", "generate_answer", 
+                               "handle_error", "decide_graph_need", "generate_graph"]:
+                    yield {
+                        "type": "node_start",
+                        "node": node_name,
+                        "input": current_state
+                    }
+            
+            # Node end event
+            elif event_type == "on_chain_end":
+                node_name = event.get("name", "")
+                if node_name in ["generate_sql", "execute_sql", "generate_answer", 
+                               "handle_error", "decide_graph_need", "generate_graph"]:
+                    output = event.get("data", {}).get("output", {})
+                    if output:
+                        current_state.update(output)
+                        yield {
+                            "type": "node_end",
+                            "node": node_name,
+                            "output": output,
+                            "state": current_state.copy()
+                        }
+        
+        # Send final result
+        yield {
+            "type": "final",
+            "result": current_state
+        }
+        
+    except Exception as e:
+        yield {
+            "type": "error",
+            "error": str(e)
+        }
 
 
 if __name__ == "__main__":
