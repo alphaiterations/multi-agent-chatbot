@@ -1,11 +1,24 @@
-langgraph
-chainlit
+# Core dependencies
+langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=1.0.0
+chainlit>=1.0.0
 openai>=1.55.0
-kagglehub
+
+# Data and database
 pandas
 sqlalchemy
+sqlite3; python_version < '3.0'
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.12.0
+
+# Utilities
 pydantic
 python-dotenv
 tiktoken
+
+# Optional (for notebook)
+kagglehub
 uvicorn
 fastapi
