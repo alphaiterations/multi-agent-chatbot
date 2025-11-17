@@ -1,0 +1,11 @@
+langgraph
+chainlit
+openai>=1.55.0
+kagglehub
+pandas
+sqlalchemy
+pydantic
+python-dotenv
+tiktoken
+uvicorn
+fastapi
