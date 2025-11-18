@@ -158,9 +158,9 @@ async def main(message: cl.Message):
     # Now send the final response outside the workflow step
     if final_result:
         # Build the response content
-        response_content = f"""**Your Question:** {final_result['question']}
-
-**Generated SQL Query:**
+        # Only show SQL query if it exists and is not empty
+        if final_result.get('sql_query') and final_result['sql_query'].strip():
+            response_content = f"""**Generated SQL Query:**
 ```sql
 {final_result['sql_query']}
 ```
@@ -168,6 +168,9 @@ async def main(message: cl.Message):
 **Answer:**
 {final_result['final_answer']}
 """
+        else:
+            # For greetings or out of scope messages, just show the answer
+            response_content = final_result['final_answer']
         
         # If there was an error, include it
         if final_result.get('error'):

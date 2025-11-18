@@ -104,6 +104,79 @@ class AgentState(TypedDict):
     needs_graph: bool
     graph_type: str
     graph_json: str  # Plotly figure JSON for Chainlit
+    is_in_scope: bool  # Whether the question is about e-commerce data
+
+
+def check_guardrails(state: AgentState) -> AgentState:
+    """Check if the question is within scope (e-commerce related)"""
+    question = state["question"]
+    
+    prompt = f"""You are a guardrails system for an e-commerce database chatbot. Your job is to determine if a user's question is related to e-commerce data, if it's a greeting, or if it's out of scope.
+
+The chatbot has access to an e-commerce database with information about:
+- Customers and their locations
+- Orders and order status (data from 2016-2018)
+- Products and categories
+- Sellers
+- Payments
+- Reviews
+- Shipping and delivery information
+
+Examples of GREETING messages:
+- "Hi", "Hello", "Hey"
+- "Good morning", "Good afternoon"
+- "How are you?"
+- Any casual greeting or introduction
+
+Examples of IN-SCOPE questions:
+- "How many orders were placed last month?"
+- "What are the top selling products?"
+- "Show me customer distribution by state"
+- "What is the average order value?"
+- "Which sellers have the highest ratings?"
+
+Examples of OUT-OF-SCOPE questions:
+- Personal questions (e.g., "What is my wife's name?", "Where do I live?")
+- Political questions (e.g., "Who should I vote for?", "What do you think about the president?")
+- General knowledge (e.g., "What is the capital of France?", "How does photosynthesis work?")
+- Unrelated topics (e.g., "Tell me a joke", "What's the weather like?")
+
+User Question: {question}
+
+Analyze the question and respond in JSON format:
+{{
+    "is_in_scope": true/false,
+    "is_greeting": true/false,
+    "reason": "brief explanation of why it is or isn't in scope or if it's a greeting"
+}}
+
+If the question is a greeting, mark is_greeting as true and is_in_scope as false.
+If the question is ambiguous but could potentially relate to the e-commerce data, mark it as in_scope."""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a guardrails system that filters questions to ensure they are relevant to e-commerce data analysis or identifies greetings."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0,
+        response_format={"type": "json_object"}
+    )
+    
+    result = json.loads(response.choices[0].message.content)
+    state["is_in_scope"] = result.get("is_in_scope", False)
+    is_greeting = result.get("is_greeting", False)
+    
+    # If it's a greeting, provide a welcome message
+    if is_greeting:
+        state["final_answer"] = "Hi! I am your e-commerce assistant. I can answer all the queries related to orders, customers, products, sellers, payments, and reviews between 2016-2018. How can I help you today?"
+        return state
+    
+    # If out of scope, set the final answer immediately
+    if not state["is_in_scope"]:
+        state["final_answer"] = "I apologize, but your question appears to be out of scope. I can only answer questions about the e-commerce data, including:\n\n- Customer information and locations\n- Orders and order status\n- Products and categories\n- Sellers and their performance\n- Payment information\n- Reviews and ratings\n- Shipping and delivery data\n\nPlease ask a question related to the e-commerce database."
+    
+    return state
 
 
 def generate_sql(state: AgentState) -> AgentState:
@@ -121,11 +194,12 @@ Important Guidelines:
 1. Use only the tables and columns mentioned in the schema
 2. Use proper JOIN clauses when querying multiple tables
 3. Return ONLY the SQL query without any explanation or markdown formatting
-4. Do not include semicolons at the end
+4. If the question contains multiple sub-questions, generate separate SQL queries separated by semicolons
 5. Use aggregate functions (COUNT, SUM, AVG, etc.) appropriately
 6. Add LIMIT clauses for queries that might return many rows (default LIMIT 10 unless user specifies)
 7. Use proper WHERE clauses to filter data
 8. For date comparisons, remember the dates are stored as TEXT in ISO format
+9. Each SQL statement should be on its own line for clarity when multiple queries are needed
 
 Generate the SQL query:"""
 
@@ -149,32 +223,50 @@ Generate the SQL query:"""
 
 
 def execute_sql(state: AgentState) -> AgentState:
-    """Execute the generated SQL query"""
+    """Execute the generated SQL query (handles multiple queries if present)"""
     sql_query = state["sql_query"]
     
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Execute the query
-        cursor.execute(sql_query)
+        # Split multiple SQL statements (separated by semicolons)
+        # Remove empty statements and strip whitespace
+        sql_statements = [stmt.strip() for stmt in sql_query.split(';') if stmt.strip()]
         
-        # Fetch results
-        results = cursor.fetchall()
-        column_names = [description[0] for description in cursor.description]
+        all_results = []
+        
+        # Execute each statement separately
+        for i, statement in enumerate(sql_statements):
+            cursor.execute(statement)
+            
+            # Fetch results for this statement
+            results = cursor.fetchall()
+            
+            if results:
+                column_names = [description[0] for description in cursor.description]
+                
+                # Convert to list of dictionaries
+                formatted_results = []
+                for row in results[:100]:  # Limit to 100 rows per query
+                    formatted_results.append(dict(zip(column_names, row)))
+                
+                # If multiple queries, label them
+                if len(sql_statements) > 1:
+                    all_results.append({
+                        f"query_{i+1}": formatted_results,
+                        f"query_{i+1}_sql": statement
+                    })
+                else:
+                    all_results = formatted_results
         
         conn.close()
         
         # Format results
-        if not results:
+        if not all_results:
             state["query_result"] = "No results found."
         else:
-            # Convert to list of dictionaries
-            formatted_results = []
-            for row in results[:100]:  # Limit to 100 rows for display
-                formatted_results.append(dict(zip(column_names, row)))
-            
-            state["query_result"] = json.dumps(formatted_results, indent=2)
+            state["query_result"] = json.dumps(all_results, indent=2)
         
         state["error"] = ""
         
@@ -202,7 +294,8 @@ Query Results:
 
 Please provide a clear, concise answer to the original question based on the query results.
 Format the answer in a user-friendly way. If the results contain numbers, present them clearly.
-If there are multiple results, summarize them appropriately.
+If there are multiple queries/results (for multi-part questions), address each part of the question separately.
+Use bullet points or numbered lists for multiple answers.
 
 Answer:"""
 
@@ -430,6 +523,13 @@ def should_generate_graph(state: AgentState) -> str:
     return "skip_graph"
 
 
+def check_scope(state: AgentState) -> str:
+    """Check if question is in scope to continue processing"""
+    if state.get("is_in_scope", True):
+        return "in_scope"
+    return "out_of_scope"
+
+
 # Build the LangGraph workflow
 def create_text2sql_graph():
     """Create the LangGraph state graph for Text2SQL with graph generation"""
@@ -437,6 +537,7 @@ def create_text2sql_graph():
     workflow = StateGraph(AgentState)
     
     # Add nodes
+    workflow.add_node("check_guardrails", check_guardrails)
     workflow.add_node("generate_sql", generate_sql)
     workflow.add_node("execute_sql", execute_sql)
     workflow.add_node("generate_answer", generate_answer)
@@ -444,8 +545,19 @@ def create_text2sql_graph():
     workflow.add_node("decide_graph_need", decide_graph_need)
     workflow.add_node("generate_graph", generate_graph)
     
-    # Add edges
-    workflow.set_entry_point("generate_sql")
+    # Add edges - start with guardrails check
+    workflow.set_entry_point("check_guardrails")
+    
+    # Conditional edge from guardrails - only proceed if in scope
+    workflow.add_conditional_edges(
+        "check_guardrails",
+        check_scope,
+        {
+            "in_scope": "generate_sql",
+            "out_of_scope": END
+        }
+    )
+    
     workflow.add_edge("generate_sql", "execute_sql")
     
     # Conditional edge based on execution success
@@ -528,7 +640,8 @@ async def process_question_stream(question: str):
         iteration=0,
         needs_graph=False,
         graph_type="",
-        graph_json=""
+        graph_json="",
+        is_in_scope=True
     )
     
     current_state = initial_state.copy()
@@ -545,7 +658,7 @@ async def process_question_stream(question: str):
             # Node start event
             if event_type == "on_chain_start":
                 node_name = event.get("name", "")
-                if node_name in ["generate_sql", "execute_sql", "generate_answer", 
+                if node_name in ["check_guardrails", "generate_sql", "execute_sql", "generate_answer", 
                                "handle_error", "decide_graph_need", "generate_graph"]:
                     yield {
                         "type": "node_start",
@@ -556,7 +669,7 @@ async def process_question_stream(question: str):
             # Node end event
             elif event_type == "on_chain_end":
                 node_name = event.get("name", "")
-                if node_name in ["generate_sql", "execute_sql", "generate_answer", 
+                if node_name in ["check_guardrails", "generate_sql", "execute_sql", "generate_answer", 
                                "handle_error", "decide_graph_need", "generate_graph"]:
                     output = event.get("data", {}).get("output", {})
                     if output:
