@@ -3,22 +3,22 @@ Chainlit Frontend for Text2SQL Chatbot with Graph Visualization and LangGraph De
 """
 
 import chainlit as cl
-from text2sql_agent import process_question, process_question_stream, generat_graph
-import os
+from text2sql_agent import process_question_stream, generate_graph_visualization
 import json
+
+##Generate workflow diagram once at module load (optional)
+##Uncomment the lines below if you want to generate the diagram:
+try:
+    workflow_diagram_path = generate_graph_visualization("text2sql_workflow.png")
+    if workflow_diagram_path:
+        print(f"✅ Workflow diagram generated: {workflow_diagram_path}")
+except Exception as e:
+    print(f"⚠️ Warning: Could not generate workflow diagram: {e}")
 
 # Set page configuration
 @cl.on_chat_start
 async def start():
     """Initialize the chat session"""
-    
-    # Generate the LangGraph workflow visualization
-    try:
-        workflow_diagram_path = generat_graph("text2sql_workflow.png")
-        if workflow_diagram_path:
-            print(f"✅ Workflow diagram generated: {workflow_diagram_path}")
-    except Exception as e:
-        print(f"⚠️ Warning: Could not generate workflow diagram: {e}")
     
     await cl.Message(
         content="👋 Welcome to the Text2SQL E-commerce Assistant!\n\n"
@@ -125,8 +125,8 @@ async def main(message: cl.Message):
                                 output_text = "ℹ️ **No graph needed** for this query"
                         
                         elif node_name == "generate_graph":
-                            has_image = bool(output.get("graph_image"))
-                            if has_image:
+                            has_graph = bool(output.get("graph_json"))
+                            if has_graph:
                                 output_text = "✅ Graph generated successfully"
                             else:
                                 output_text = "⚠️ Graph generation skipped"
@@ -177,45 +177,23 @@ async def main(message: cl.Message):
         await cl.Message(content=response_content).send()
         
         # Send graph if available - use Chainlit's native Plotly element
-        if final_result.get('needs_graph'):
-            if final_result.get('graph_json'):
-                # Send interactive Plotly visualization using Chainlit's Plotly element
-                import plotly.graph_objects as go
-                
-                # Parse the JSON back to a figure
-                fig = go.Figure(json.loads(final_result['graph_json']))
-                
-                graph_element = cl.Plotly(
-                    name=f"{final_result.get('graph_type', 'chart')}_visualization",
-                    figure=fig,
-                    display="inline"
-                )
-                
-                await cl.Message(
-                    content=f"📊 **Interactive Visualization ({final_result.get('graph_type', 'chart').title()} Chart)**\n\n*Hover over the chart for details, zoom, and pan!*",
-                    elements=[graph_element]
-                ).send()
+        if final_result.get('needs_graph') and final_result.get('graph_json'):
+            # Send interactive Plotly visualization using Chainlit's Plotly element
+            import plotly.graph_objects as go
             
-            elif final_result.get('graph_image'):
-                # Fallback to static image if JSON not available
-                import base64
-                
-                # Decode base64 image
-                image_data = base64.b64decode(final_result['graph_image'])
-                
-                # Create image element
-                graph_element = cl.Image(
-                    name=f"{final_result.get('graph_type', 'chart')}_visualization",
-                    content=image_data,
-                    display="inline",
-                    size="large"
-                )
-                
-                # Send graph with caption
-                await cl.Message(
-                    content=f"📊 **Visualization ({final_result.get('graph_type', 'chart').title()} Chart)**",
-                    elements=[graph_element]
-                ).send()
+            # Parse the JSON back to a figure
+            fig = go.Figure(json.loads(final_result['graph_json']))
+            
+            graph_element = cl.Plotly(
+                name=f"{final_result.get('graph_type', 'chart')}_visualization",
+                figure=fig,
+                display="inline"
+            )
+            
+            await cl.Message(
+                content=f"📊 **Interactive Visualization ({final_result.get('graph_type', 'chart').title()} Chart)**\n\n*Hover over the chart for details, zoom, and pan!*",
+                elements=[graph_element]
+            ).send()
 
 
 @cl.on_chat_end

@@ -1,17 +1,15 @@
 """
 Text2SQL Agent using LangGraph
-This module implements a multi-agent system for converting natural language to SQL queries.
+This module implements an Agentic system for converting natural language to SQL queries and also generates graphs.
 """
 
 import os
 import sqlite3
-from typing import TypedDict, Annotated, Sequence, Optional
+from typing import TypedDict
 from langgraph.graph import StateGraph, END
 from openai import OpenAI
 import json
 import pandas as pd
-from io import BytesIO
-import base64
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -105,7 +103,6 @@ class AgentState(TypedDict):
     iteration: int
     needs_graph: bool
     graph_type: str
-    graph_image: str
     graph_json: str  # Plotly figure JSON for Chainlit
 
 
@@ -284,7 +281,6 @@ def generate_graph(state: AgentState) -> AgentState:
         # Parse query results
         results = json.loads(query_result)
         if not results or len(results) == 0:
-            state["graph_image"] = ""
             state["graph_json"] = ""
             return state
         
@@ -346,7 +342,7 @@ Generate the Plotly code:"""
         except ImportError:
             print("Plotly not installed. Installing...")
             import subprocess
-            subprocess.check_call(['pip', 'install', 'plotly', 'kaleido'])
+            subprocess.check_call(['pip', 'install', 'plotly'])
             import plotly.graph_objects as go
             import plotly.express as px
             exec_globals['go'] = go
@@ -365,19 +361,9 @@ Generate the Plotly code:"""
         graph_json = fig.to_json()
         state["graph_json"] = graph_json
         
-        # Also generate static image as fallback
-        try:
-            image_bytes = fig.to_image(format="png", width=1000, height=600)
-            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-            state["graph_image"] = image_base64
-        except Exception as img_error:
-            print(f"Image generation warning (non-critical): {img_error}")
-            state["graph_image"] = ""
-        
     except Exception as e:
         print(f"Graph generation error: {e}")
         print(f"Generated code:\n{plotly_code if 'plotly_code' in locals() else 'No code generated'}")
-        state["graph_image"] = ""
         state["graph_json"] = ""
     
     return state
@@ -495,7 +481,7 @@ def create_text2sql_graph():
 text2sql_graph = create_text2sql_graph()
 
 
-def generat_graph(output_path: str = "text2sql_workflow.png") -> str:
+def generate_graph_visualization(output_path: str = "text2sql_workflow.png") -> str:
     """
     Generate a PNG visualization of the LangGraph workflow.
     
@@ -506,8 +492,6 @@ def generat_graph(output_path: str = "text2sql_workflow.png") -> str:
         str: Path to the generated PNG file
     """
     try:
-        from IPython.display import Image, display
-        
         # Get the graph visualization
         graph_image = text2sql_graph.get_graph().draw_mermaid_png()
         
@@ -527,40 +511,6 @@ def generat_graph(output_path: str = "text2sql_workflow.png") -> str:
         return None
 
 
-def process_question(question: str) -> dict:
-    """Process a natural language question and return SQL + answer + optional graph"""
-    initial_state = AgentState(
-        question=question,
-        sql_query="",
-        query_result="",
-        final_answer="",
-        error="",
-        iteration=0,
-        needs_graph=False,
-        graph_type="",
-        graph_image="",
-        graph_json=""
-    )
-    
-    # Invoke with increased recursion limit
-    result = text2sql_graph.invoke(
-        initial_state,
-        config={"recursion_limit": 50}
-    )
-    
-    return {
-        "question": result["question"],
-        "sql_query": result["sql_query"],
-        "query_result": result["query_result"],
-        "final_answer": result["final_answer"],
-        "error": result.get("error", ""),
-        "needs_graph": result.get("needs_graph", False),
-        "graph_type": result.get("graph_type", ""),
-        "graph_image": result.get("graph_image", ""),
-        "graph_json": result.get("graph_json", "")
-    }
-
-
 async def process_question_stream(question: str):
     """
     Process a natural language question and stream node execution events.
@@ -578,7 +528,6 @@ async def process_question_stream(question: str):
         iteration=0,
         needs_graph=False,
         graph_type="",
-        graph_image="",
         graph_json=""
     )
     
@@ -633,28 +582,10 @@ async def process_question_stream(question: str):
 
 
 if __name__ == "__main__":
-    # Test the agent with and without graphs
+    # Test the agent
     print("=" * 80)
-    print("Test 1: Simple count (no graph expected)")
+    print("Text2SQL Agent - Use 'chainlit run app.py' to start the web interface")
     print("=" * 80)
-    test_question_1 = "How many orders were delivered?"
-    result_1 = process_question(test_question_1)
-    print(f"Question: {result_1['question']}")
-    print(f"\nSQL Query: {result_1['sql_query']}")
-    print(f"\nAnswer: {result_1['final_answer']}")
-    print(f"\nNeeds Graph: {result_1['needs_graph']}")
-    print(f"Graph Type: {result_1['graph_type']}")
-    
-    print("\n" + "=" * 80)
-    print("Test 2: Breakdown query (graph expected)")
-    print("=" * 80)
-    test_question_2 = "Can you give me yearly breakdown of the orders?"
-    result_2 = process_question(test_question_2)
-    print(f"Question: {result_2['question']}")
-    print(f"\nSQL Query: {result_2['sql_query']}")
-    print(f"\nAnswer: {result_2['final_answer']}")
-    print(f"\nNeeds Graph: {result_2['needs_graph']}")
-    print(f"Graph Type: {result_2['graph_type']}")
-    if result_2['graph_image']:
-        print(f"Graph Image: Generated (base64 encoded, {len(result_2['graph_image'])} characters)")
+    print("\nThis module is meant to be imported and used via the Chainlit app.")
+    print("Run: chainlit run app.py")
 
