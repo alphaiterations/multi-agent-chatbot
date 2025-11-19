@@ -107,7 +107,33 @@ class AgentState(TypedDict):
     is_in_scope: bool  # Whether the question is about e-commerce data
 
 
-def check_guardrails(state: AgentState) -> AgentState:
+# Agent configurations with different roles and personalities
+
+AGENT_CONFIGS = {
+    "guardrails_agent": {
+        "role": "Security and Scope Manager",
+        "system_prompt": "You are a strict guardrails system that filters questions to ensure they are relevant to e-commerce data analysis or identifies greetings.",
+    },
+    "sql_agent": {
+        "role": "SQL Expert", 
+        "system_prompt": "You are a senior SQL developer specializing in e-commerce databases. Generate only valid SQLite queries without any formatting or explanation.",
+    },
+    "analysis_agent": {
+        "role": "Data Analyst",
+        "system_prompt": "You are a helpful data analyst that explains database query results in natural language with clear insights.",
+    },
+    "viz_agent": {
+        "role": "Visualization Specialist", 
+        "system_prompt": "You are a data visualization expert. Generate clean, executable Plotly code without any markdown formatting or explanations.",
+    },
+    "error_agent": {
+        "role": "Error Recovery Specialist",
+        "system_prompt": "You diagnose and fix SQL errors with expert knowledge of database schemas and query optimization.",
+    }
+}
+
+
+def guardrails_agent(state: AgentState) -> AgentState:
     """Check if the question is within scope (e-commerce related)"""
     question = state["question"]
     
@@ -156,7 +182,7 @@ If the question is ambiguous but could potentially relate to the e-commerce data
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a guardrails system that filters questions to ensure they are relevant to e-commerce data analysis or identifies greetings."},
+            {"role": "system", "content": AGENT_CONFIGS["guardrails_agent"]["system_prompt"]},
             {"role": "user", "content": prompt}
         ],
         temperature=0,
@@ -179,7 +205,7 @@ If the question is ambiguous but could potentially relate to the e-commerce data
     return state
 
 
-def generate_sql(state: AgentState) -> AgentState:
+def sql_agent(state: AgentState) -> AgentState:
     """Generate SQL query from natural language question"""
     question = state["question"]
     iteration = state.get("iteration", 0)
@@ -206,7 +232,7 @@ Generate the SQL query:"""
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a SQL expert. Generate only valid SQLite queries without any formatting or explanation."},
+            {"role": "system", "content": AGENT_CONFIGS["sql_agent"]["system_prompt"]},
             {"role": "user", "content": prompt}
         ],
         temperature=0
@@ -276,8 +302,50 @@ def execute_sql(state: AgentState) -> AgentState:
     
     return state
 
+def error_agent(state: AgentState) -> AgentState:
+    """Handle errors and attempt to fix the SQL query"""
+    error = state["error"]
+    sql_query = state["sql_query"]
+    question = state["question"]
+    iteration = state.get("iteration", 0)
+    
+    # If we've tried too many times, give up
+    if iteration > 3:
+        state["final_answer"] = f"I apologize, but I'm having trouble generating a correct SQL query for your question. Error: {error}"
+        return state
+    
+    prompt = f"""The following SQL query failed with an error. Please fix it.
 
-def generate_answer(state: AgentState) -> AgentState:
+{SCHEMA_INFO}
+
+Original Question: {question}
+
+Failed SQL Query: {sql_query}
+
+Error: {error}
+
+Generate a corrected SQL query that will work. Return ONLY the SQL query without any explanation or markdown formatting:"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": AGENT_CONFIGS["error_agent"]["system_prompt"]},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0
+    )
+    
+    corrected_query = response.choices[0].message.content.strip()
+    corrected_query = corrected_query.replace("```sql", "").replace("```", "").strip()
+    
+    state["sql_query"] = corrected_query
+    state["error"] = ""  # Clear the error for retry
+    state["iteration"] = iteration + 1  # Increment iteration counter
+    
+    return state
+
+
+def analysis_agent(state: AgentState) -> AgentState:
     """Generate natural language answer from query results"""
     question = state["question"]
     sql_query = state["sql_query"]
@@ -302,7 +370,7 @@ Answer:"""
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a helpful assistant that explains data insights clearly and concisely."},
+            {"role": "system", "content": AGENT_CONFIGS["analysis_agent"]["system_prompt"]},
             {"role": "user", "content": prompt}
         ],
         temperature=0.7
@@ -364,7 +432,7 @@ Respond in JSON format:
     return state
 
 
-def generate_graph(state: AgentState) -> AgentState:
+def viz_agent(state: AgentState) -> AgentState:
     """Generate a graph visualization from query results using LLM-generated Plotly code"""
     query_result = state["query_result"]
     graph_type = state["graph_type"]
@@ -409,7 +477,7 @@ Generate the Plotly code:"""
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a data visualization expert. Generate clean, executable Plotly code without any markdown formatting or explanations."},
+                {"role": "system", "content": AGENT_CONFIGS["viz_agent"]["system_prompt"]},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3
@@ -462,47 +530,10 @@ Generate the Plotly code:"""
     return state
 
 
-def handle_error(state: AgentState) -> AgentState:
-    """Handle errors and attempt to fix the SQL query"""
-    error = state["error"]
-    sql_query = state["sql_query"]
-    question = state["question"]
-    iteration = state.get("iteration", 0)
-    
-    # If we've tried too many times, give up
-    if iteration > 3:
-        state["final_answer"] = f"I apologize, but I'm having trouble generating a correct SQL query for your question. Error: {error}"
-        return state
-    
-    prompt = f"""The following SQL query failed with an error. Please fix it.
 
-{SCHEMA_INFO}
 
-Original Question: {question}
 
-Failed SQL Query: {sql_query}
 
-Error: {error}
-
-Generate a corrected SQL query that will work. Return ONLY the SQL query without any explanation or markdown formatting:"""
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a SQL expert. Fix the SQL query to resolve the error."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0
-    )
-    
-    corrected_query = response.choices[0].message.content.strip()
-    corrected_query = corrected_query.replace("```sql", "").replace("```", "").strip()
-    
-    state["sql_query"] = corrected_query
-    state["error"] = ""  # Clear the error for retry
-    state["iteration"] = iteration + 1  # Increment iteration counter
-    
-    return state
 
 
 def should_retry(state: AgentState) -> str:
@@ -519,7 +550,7 @@ def should_retry(state: AgentState) -> str:
 def should_generate_graph(state: AgentState) -> str:
     """Decide whether to generate a graph"""
     if state.get("needs_graph", False):
-        return "generate_graph"
+        return "viz_agent"
     return "skip_graph"
 
 
@@ -537,60 +568,61 @@ def create_text2sql_graph():
     workflow = StateGraph(AgentState)
     
     # Add nodes
-    workflow.add_node("check_guardrails", check_guardrails)
-    workflow.add_node("generate_sql", generate_sql)
+    workflow.add_node("guardrails_agent", guardrails_agent)
+    workflow.add_node("sql_agent", sql_agent)
     workflow.add_node("execute_sql", execute_sql)
-    workflow.add_node("generate_answer", generate_answer)
-    workflow.add_node("handle_error", handle_error)
+    workflow.add_node("analysis_agent", analysis_agent)
+    workflow.add_node("error_agent", error_agent)
     workflow.add_node("decide_graph_need", decide_graph_need)
-    workflow.add_node("generate_graph", generate_graph)
+    workflow.add_node("viz_agent", viz_agent)
     
     # Add edges - start with guardrails check
-    workflow.set_entry_point("check_guardrails")
+    workflow.set_entry_point("guardrails_agent")
     
     # Conditional edge from guardrails - only proceed if in scope
     workflow.add_conditional_edges(
-        "check_guardrails",
+        "guardrails_agent",
         check_scope,
         {
-            "in_scope": "generate_sql",
+            "in_scope": "sql_agent",
             "out_of_scope": END
         }
     )
     
-    workflow.add_edge("generate_sql", "execute_sql")
+    workflow.add_edge("sql_agent", "execute_sql")
     
     # Conditional edge based on execution success
     workflow.add_conditional_edges(
         "execute_sql",
         should_retry,
         {
-            "success": "generate_answer",
-            "retry": "handle_error",
-            "end": "generate_answer"
+            "success": "analysis_agent",
+            "retry": "error_agent",
+            "end": "analysis_agent"
         }
     )
     
-    workflow.add_edge("handle_error", "execute_sql")
-    workflow.add_edge("generate_answer", "decide_graph_need")
+    workflow.add_edge("error_agent", "execute_sql")
+    workflow.add_edge("analysis_agent", "decide_graph_need")
     
     # Conditional edge for graph generation
     workflow.add_conditional_edges(
         "decide_graph_need",
         should_generate_graph,
         {
-            "generate_graph": "generate_graph",
+            "viz_agent": "viz_agent",
             "skip_graph": END
         }
     )
     
-    workflow.add_edge("generate_graph", END)
+    workflow.add_edge("viz_agent", END)
     
     return workflow.compile()
 
 
 # Create the compiled graph
 text2sql_graph = create_text2sql_graph()
+
 
 
 def generate_graph_visualization(output_path: str = "text2sql_workflow.png") -> str:
@@ -621,6 +653,8 @@ def generate_graph_visualization(output_path: str = "text2sql_workflow.png") -> 
         print("  or")
         print("  pip install grandalf")
         return None
+
+
 
 
 async def process_question_stream(question: str):
@@ -658,8 +692,8 @@ async def process_question_stream(question: str):
             # Node start event
             if event_type == "on_chain_start":
                 node_name = event.get("name", "")
-                if node_name in ["check_guardrails", "generate_sql", "execute_sql", "generate_answer", 
-                               "handle_error", "decide_graph_need", "generate_graph"]:
+                if node_name in ["guardrails_agent", "sql_agent", "execute_sql", "analysis_agent", 
+                               "error_agent", "decide_graph_need", "viz_agent"]:
                     yield {
                         "type": "node_start",
                         "node": node_name,
@@ -669,8 +703,8 @@ async def process_question_stream(question: str):
             # Node end event
             elif event_type == "on_chain_end":
                 node_name = event.get("name", "")
-                if node_name in ["check_guardrails", "generate_sql", "execute_sql", "generate_answer", 
-                               "handle_error", "decide_graph_need", "generate_graph"]:
+                if node_name in ["guardrails_agent", "sql_agent", "execute_sql", "analysis_agent", 
+                               "error_agent", "decide_graph_need", "viz_agent"]:
                     output = event.get("data", {}).get("output", {})
                     if output:
                         current_state.update(output)
