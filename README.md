@@ -524,7 +524,7 @@ graph TD
     
     B --> C{In Scope?}
     
-    C -->|Out of Scope| D[END<br/>Provide Scope Message]
+    C -->|Out of Scope/Greeting| D[END<br/>Provide Scope Message]
     C -->|In Scope| E[SQL Agent<br/>Generate SQL Query]
     
     E --> F[Execute SQL]
@@ -537,10 +537,10 @@ graph TD
     I --> J{Query Success?}
     
     J -->|Success| K[Analysis Agent<br/>Generate Natural Language Answer]
-    J -->|Retry Needed| L[Error Agent<br/>Fix SQL Error]
-    J -->|Max Retries| K
+    J -->|Retry Needed<br/>(max 3 attempts)| L[Error Agent<br/>Fix SQL Error]
+    J -->|Max Retries Reached| K
     
-    L --> F
+    L --> F[Retry Execution]
     
     K --> M[Visualization Decision Agent<br/>Evaluate Graph Need]
     
@@ -549,7 +549,7 @@ graph TD
     N -->|Yes| O[Visualization Agent<br/>Generate Plotly Graph]
     N -->|No| D
     
-    O --> D
+    O --> D[END<br/>Return Final Answer + Graph]
     
     %% Styling
     classDef inputNode fill:#bbdefb,stroke:#1976d2,stroke-width:2px
