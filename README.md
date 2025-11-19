@@ -518,28 +518,54 @@ The system uses **LangGraph's state machine** for orchestration:
 
 ### State Transitions
 
-```
-START
-  ↓
-Guardrails Agent
-  ├─→ [Out of Scope] → END
-  └─→ [In Scope]
-       ↓
-     SQL Agent
-       ↓
-     Execute SQL
-       ├─→ [Error] → Error Agent → Execute SQL (retry)
-       └─→ [Success]
-            ↓
-          Analysis Agent
-            ↓
-          Decide Graph Need
-            ├─→ [No Graph] → END
-            └─→ [Need Graph]
-                 ↓
-               Viz Agent
-                 ↓
-                END
+```mermaid
+graph TD
+    A[Start: User Question] --> B[Guardrails Agent<br/>Scope & Greeting Check]
+    
+    B --> C{In Scope?}
+    
+    C -->|Out of Scope| D[END<br/>Provide Scope Message]
+    C -->|In Scope| E[SQL Agent<br/>Generate SQL Query]
+    
+    E --> F[Execute SQL]
+    
+    subgraph G[Database Operations]
+        F --> H[(E-commerce Database<br/>SQLite)]
+        H --> I[Query Results]
+    end
+    
+    I --> J{Query Success?}
+    
+    J -->|Success| K[Analysis Agent<br/>Generate Natural Language Answer]
+    J -->|Retry Needed| L[Error Agent<br/>Fix SQL Error]
+    J -->|Max Retries| K
+    
+    L --> F
+    
+    K --> M[Visualization Decision Agent<br/>Evaluate Graph Need]
+    
+    M --> N{Graph Needed?}
+    
+    N -->|Yes| O[Visualization Agent<br/>Generate Plotly Graph]
+    N -->|No| D
+    
+    O --> D
+    
+    %% Styling
+    classDef inputNode fill:#bbdefb,stroke:#1976d2,stroke-width:2px
+    classDef agentNode fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef decisionNode fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#000
+    classDef actionNode fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef databaseNode fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef endNode fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    
+    class A inputNode
+    class B,E,L,K,M,O agentNode
+    class C,J,N decisionNode
+    class F actionNode
+    class H databaseNode
+    class I actionNode
+    class D endNode
 ```
 
 ### Conditional Logic
@@ -596,8 +622,6 @@ Guardrails Agent
 ---
 
 ## 🔮 Future Enhancements
-
-### Planned Features
 
 1. **Enhanced LLM Support**
    - Support for local LLMs (Ollama, LLaMA)
@@ -719,13 +743,6 @@ Found a bug? Have a feature request?
 ```bash
 # Install development dependencies
 pip install -r requirements-dev.txt
-
-# Run tests
-pytest tests/
-
-# Check code style
-black .
-flake8 .
 ```
 
 ---
