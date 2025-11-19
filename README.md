@@ -520,51 +520,43 @@ The system uses **LangGraph's state machine** for orchestration:
 
 ```mermaid
 graph TD
-    A[Start: User Question] --> B[Guardrails Agent<br/>Scope & Greeting Check]
+    A[Start] --> B[Guardrails Agent]
     
     B --> C{In Scope?}
     
-    C -->|Out of Scope/Greeting| D[END<br/>Provide Scope Message]
-    C -->|In Scope| E[SQL Agent<br/>Generate SQL Query]
+    C -->|No| D[END]
+    C -->|Yes| E[SQL Agent]
     
     E --> F[Execute SQL]
     
-    subgraph G[Database Operations]
-        F --> H[(E-commerce Database<br/>SQLite)]
-        H --> I[Query Results]
-    end
+    F --> G[(Database)]
+    G --> H[Get Results]
     
-    I --> J{Query Success?}
+    H --> I{Success?}
     
-    J -->|Success| K[Analysis Agent<br/>Generate Natural Language Answer]
-    J -->|Retry Needed<br/>(max 3 attempts)| L[Error Agent<br/>Fix SQL Error]
-    J -->|Max Retries Reached| K
+    I -->|Yes| J[Analysis Agent]
+    I -->|No| K[Error Agent]
     
-    L --> F[Retry Execution]
+    K --> F
     
-    K --> M[Visualization Decision Agent<br/>Evaluate Graph Need]
+    J --> L[Viz Decision Agent]
     
-    M --> N{Graph Needed?}
+    L --> M{Need Graph?}
     
-    N -->|Yes| O[Visualization Agent<br/>Generate Plotly Graph]
-    N -->|No| D
+    M -->|Yes| N[Visualization Agent]
+    M -->|No| D
     
-    O --> D[END<br/>Return Final Answer + Graph]
+    N --> D
     
     %% Styling
-    classDef inputNode fill:#bbdefb,stroke:#1976d2,stroke-width:2px
     classDef agentNode fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-    classDef decisionNode fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#000
-    classDef actionNode fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef decisionNode fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
     classDef databaseNode fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
     classDef endNode fill:#fce4ec,stroke:#c2185b,stroke-width:2px
     
-    class A inputNode
-    class B,E,L,K,M,O agentNode
-    class C,J,N decisionNode
-    class F actionNode
-    class H databaseNode
-    class I actionNode
+    class B,E,K,J,L,N agentNode
+    class C,I,M decisionNode
+    class G databaseNode
     class D endNode
 ```
 
