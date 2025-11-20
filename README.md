@@ -12,6 +12,13 @@
 Read the full medium article here: [Agentic AI Project: Build Multi-Agent Text2SQL Chatbot for Ecommerce Database
 ](https://medium.com/towards-artificial-intelligence/agentic-ai-project-build-multi-agent-text2sql-chatbot-for-ecommerce-database-c8d0e294ec94)
 
+
+
+https://github.com/user-attachments/assets/4e1988b2-b131-4421-bbd4-38eaecaaae38
+
+
+
+
 ## 📚 Table of Contents
 
 - [Introduction](#-introduction)
